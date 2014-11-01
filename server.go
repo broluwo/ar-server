@@ -86,18 +86,25 @@ func main() {
 }
 
 func initHandlers() {
+	cors := tigertonic.NewCORSBuilder().AddAllowedOrigins("*").AddAllowedHeaders("Origin", "X-Requested-With", "Content-Type", "Accept")
 	mux = tigertonic.NewTrieServeMux()
 	mux.Handle(
 		"POST",
 		"/beacon",
-		tigertonic.Marshaled(handlePOSTBeacon),
+		cors.Build(tigertonic.Marshaled(handlePOSTBeacon)),
 	)
 	//Could use go-metrics to do hot piece of art
 	mux.Handle(
 		"GET",
 		"/beacon/{minorID}",
-		tigertonic.Marshaled(handleBeacon),
+		cors.Build(tigertonic.Marshaled(handleBeacon)),
 	)
+	//
+	// mux.Handle(
+	// 	"",
+	// 	"",
+	// 	tiger
+	// 	)
 }
 
 func handlePOSTBeacon(u *url.URL, h http.Header, artPiece *ArtRoom) (status int, responseHeaders http.Header, _ interface{}, err error) {
