@@ -256,7 +256,8 @@ func handlePOSTBeacon(w http.ResponseWriter, req *http.Request) {
 			panic(errorsA)
 		}
 		req2, _ := http.NewRequest("POST", "https://api.moxtra.com/me/binders", bytes.NewBuffer(d))
-		req2.Header.Add("Authorization", "Bearer "+s.MoxtraToken.AccessToken)
+		log.Println(s.MoxtraToken.AccessToken)
+		req2.Header.Add("Authorization", "bearer "+s.MoxtraToken.AccessToken)
 		req.Header.Set("Content-Type", "application/json")
 		res2, err2 := client.Do(req2)
 		if err2 != nil {
