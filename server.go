@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -9,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/nu7hatch/gouuid"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 )
@@ -23,6 +28,12 @@ const (
 	waltersAPIPrefix    = "http://api.thewalters.org/v1/objects?apikey=ShxvahaBFNIcfWR7E78xXdssKIlXtUAJk9rDDrrmlvbOlxQKtASCzV4op5aHv2Il&title="
 	waltersImagePrefix  = "http://static.thewalters.org/images/"
 	waltersImagePostfix = "?width=500"
+	moxtraAPI           = "https://api.moxtra.com/oauth/token?client_id="             //client-id
+	moxtraCS            = "&client_secret="                                           //CLIENT-SECRET
+	moxtraGrantType     = "&grant_type=http://www.moxtra.com/auth_uniqueid&uniqueid=" //UNIQUE-ID
+	moxtraTS            = "&timestamp="                                               //TIMESTAMP
+	moxtraSig           = "&signature="                                               //SIGNATURE
+	moxtraClientID      = "u-DTusZ0ruc"
 )
 
 var (
@@ -48,15 +59,19 @@ var (
 		Name:       "ArtIndex",
 		//ExpireAf
 	}
-	indices = []mgo.Index{beaconIndex, artIndex}
+	indices            = []mgo.Index{beaconIndex, artIndex}
+	moxtraTimeStamp    string
+	moxtraSignature    []byte
+	moxtraClientSecret = []byte("vWLjlkGMZOk")
 )
 
 type (
 	//Server is the name for the server deal wit it
 	Server struct {
-		Session *mgo.Session // The main session we'll we be cloning
-		DBURI   string       // Where the DB is on the network
-		dbName  string       // Name of the MongoDB
+		Session     *mgo.Session // The main session we'll we be cloning
+		DBURI       string       // Where the DB is on the network
+		dbName      string       // Name of the MongoDB
+		MoxtraToken MoxtraToken
 	}
 
 	//Beacon is the struct that structures what the data for a beacon will look like
@@ -93,22 +108,93 @@ type (
 	Walters struct {
 		Items []WalterObj
 	}
+
+	//MoxtraToken balls to the wall
+	MoxtraToken struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int    `json:"expires_in"`
+		Scope       string
+	}
+
+	MoxtraChatRoom struct {
+		Name         string
+		Conversation bool
+	}
 )
 
 func main() {
 	log.Println("Server is warming up...")
 	initDB()
+	initMoxtra()
 	defer s.Session.Close()
 	http.Handle("/", initHandlers())
 	log.Fatalln(http.ListenAndServe(":3000", nil))
+}
+
+func initMoxtra() {
+	u, err := uuid.NewV4()
+	if err != nil {
+		log.Fatalf("Unable to Gen UUID for Moxtra.")
+	}
+	moxtraTimeStamp = strconv.FormatInt(time.Now().Unix()*1000, 10)
+	log.Printf("%v", moxtraTimeStamp)
+	combString := moxtraClientID + u.String() + moxtraTimeStamp
+
+	mac := hmac.New(sha256.New, moxtraClientSecret)
+	mac.Write([]byte(combString))
+	moxtraSignature = mac.Sum(nil)
+	str := base64.StdEncoding.EncodeToString(moxtraSignature)
+	fmt.Println(str)
+	//	re := regexp.MustCompile("/\+/g")//Global match, any backslash become a hyphen
+	//	str = re.ReplaceAllLiteralString(str, "-")
+	//	re = regexp.MustCompile("\\//g")//Any forward slash becomes an underscore
+	//	str = re.ReplaceAllLiteralString(str, "_")
+	//	re = regexp.MustCompile("\\=+$/")//Remove any trailing equals
+	//	str = re.ReplaceAllLiteralString(str, "")
+	str = strings.Replace(str, "\\", "-", -1)
+	str = strings.Replace(str, "/", "_", -1)
+	//	str = strings.Replace(str, "=", "", -1)
+	str = str[:len(str)-1]
+	client := &http.Client{}
+	url := moxtraAPI + moxtraClientID + moxtraCS + string(moxtraClientSecret) + moxtraGrantType + u.String() + moxtraTS + moxtraTimeStamp + moxtraSig + str //string(moxtraSignature)
+	log.Println(url)
+	request, _ := http.NewRequest("POST", url, nil)
+	//	request.Header.Add("Accept", "application/json")
+	res, err := client.Do(request)
+	if err != nil {
+		//		http.Error(w, "Req didn't go through", 500)
+		//		return
+		log.Fatalf("Req didn't go through, %v", err)
+	}
+	moxie := MoxtraToken{}
+	//err = ReadJSON(request, &moxie)
+	defer res.Body.Close()
+	//	var data json.RawMessage
+	log.Printf("%v", res.Body)
+	err = json.NewDecoder(res.Body).Decode(&moxie)
+	log.Printf("\n\n%v\n", moxie)
+	if err != nil {
+		//		http.Error(w, "Couldn't decode data...", 500)
+		//		return
+		log.Fatalf("Can't resolve the datum?\n %v", err)
+		//	panic(err)
+	}
+	log.Println("PASSED")
+	//err = json.Unmarshal(data, &moxie)
+	if err != nil {
+		//http.Error(w, "Couldn't marshall into individual waltOBJ.", 500)
+		//return
+		log.Fatalf("Can't unmarshall into individ waltOBJ, %v", err)
+	}
+	s.MoxtraToken = moxie
+	log.Printf("%v", moxie)
 }
 
 func initHandlers() *mux.Router {
 	r := mux.NewRouter()
 	r.HandleFunc("/beacon", handlePOSTBeacon).Methods("POST", "OPTIONS")
 	r.HandleFunc("/beacon/{minorID:[0-9]+}", handleBeacon).Methods("GET")
-	//	cors := tigertonic.NewCORSBuilder().AddAllowedOrigins("*").AddAllowedHeaders("Access-Control-Allow-Headers", )
-	//
 	return r
 }
 
@@ -170,6 +256,7 @@ func handlePOSTBeacon(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "Couldn't insert corresponding art piece.", 500)
 			return
 		}
+		//https//api.moxtra.com/me/binders
 		http.Error(w, http.StatusText(http.StatusCreated), http.StatusCreated)
 		break
 	}
