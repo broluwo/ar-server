@@ -104,7 +104,7 @@ func main() {
 }
 
 func initHandlers() {
-	cors := tigertonic.NewCORSBuilder().AddAllowedOrigins("*").AddAllowedHeaders("Origin", "X-Requested-With", "Content-Type", "Accept")
+	cors := tigertonic.NewCORSBuilder().AddAllowedOrigins("*").AddAllowedHeaders("Access-Control-Allow-Headers", "Origin", "X-Requested-With", "Content-Type", "Accept")
 	mux = tigertonic.NewTrieServeMux()
 	mux.Handle(
 		"POST",
