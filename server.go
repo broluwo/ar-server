@@ -2,12 +2,13 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"log"
 	"net/http"
-	"net/url"
+	"strconv"
+	"strings"
+	"time"
 
-	"github.com/rcrowley/go-tigertonic"
+	"github.com/gorilla/mux"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 )
@@ -19,7 +20,7 @@ const (
 	//DBURI for the mongodb
 	DBURI = "127.0.0.1"
 
-	waltersAPIPrefix    = "http://api.thewalters.org/v1/objects?apikey=ShxvahaBFNIcfWR7E78xXdssKIlXtUAJk9rDDrrmlvbOlxQKtASCzV4op5aHv2Il&keyword="
+	waltersAPIPrefix    = "http://api.thewalters.org/v1/objects?apikey=ShxvahaBFNIcfWR7E78xXdssKIlXtUAJk9rDDrrmlvbOlxQKtASCzV4op5aHv2Il&title="
 	waltersImagePrefix  = "http://static.thewalters.org/images/"
 	waltersImagePostfix = "?width=500"
 )
@@ -48,7 +49,6 @@ var (
 		//ExpireAf
 	}
 	indices = []mgo.Index{beaconIndex, artIndex}
-	mux     *tigertonic.TrieServeMux
 )
 
 type (
@@ -81,6 +81,7 @@ type (
 		ObjectID       int
 		Collection     string
 		Title          string
+		Author         string
 		Medium         string
 		Description    string
 		Images         string
@@ -97,88 +98,106 @@ type (
 func main() {
 	log.Println("Server is warming up...")
 	initDB()
-	initHandlers()
 	defer s.Session.Close()
-	server := tigertonic.NewServer("localhost:3000", mux)
-	log.Fatal(server.ListenAndServe())
+	http.Handle("/", initHandlers())
+	log.Fatalln(http.ListenAndServe(":3000", nil))
 }
 
-func initHandlers() {
-	cors := tigertonic.NewCORSBuilder().AddAllowedOrigins("*").AddAllowedHeaders("Access-Control-Allow-Headers", "Origin", "X-Requested-With", "Content-Type", "Accept")
-	mux = tigertonic.NewTrieServeMux()
-	mux.Handle(
-		"POST",
-		"/beacon",
-		cors.Build(tigertonic.Marshaled(handlePOSTBeacon)),
-	)
-	//Could use go-metrics to do hot piece of art
-	mux.Handle(
-		"GET",
-		"/beacon/{minorID}",
-		cors.Build(tigertonic.Marshaled(handleBeacon)),
-	)
+func initHandlers() *mux.Router {
+	r := mux.NewRouter()
+	r.HandleFunc("/beacon", handlePOSTBeacon).Methods("POST", "OPTIONS")
+	r.HandleFunc("/beacon/{minorID:[0-9]+}", handleBeacon).Methods("GET")
+	//	cors := tigertonic.NewCORSBuilder().AddAllowedOrigins("*").AddAllowedHeaders("Access-Control-Allow-Headers", )
+	//
+	return r
 }
 
-func handlePOSTBeacon(u *url.URL, h http.Header, formResponse *FormResponse) (status int, responseHeaders http.Header, _ interface{}, err error) {
-	log.Printf("We have begun the ritual, %v", h)
-	client := &http.Client{}
-	req, _ := http.NewRequest("GET", waltersAPIPrefix+formResponse.Title, nil)
-	req.Header.Add("Accept", "application/json")
-	res, err := client.Do(req)
-	if err != nil {
-		return 500, h, nil, errors.New("Req didn't go through")
-		//		log.Fatalf("Req didn't go through, %v", err)
-	}
-	defer res.Body.Close()
-	var data json.RawMessage
-	err = json.NewDecoder(res.Body).Decode(&data)
-	if err != nil {
-		return 500, h, nil, errors.New("Couldn't decode data...")
-		//		log.Fatalf("Can't resolve the datum?%v", err)
-	}
-	w := Walters{}
-	err = json.Unmarshal(data, &w)
-	if err != nil {
-		return 500, h, nil, errors.New("Couldn't marshall into individual waltOBJ'")
-		//		log.Fatalf("Can't unmarshall into individ waltOBJ, %v", err)
-	}
-	waltersObject := w.Items[0]
-	waltersObject.Beacon = Beacon{formResponse.ProxID, formResponse.MajorID, formResponse.MinorID}
-	waltersObject.ImageURL = waltersImagePrefix + waltersObject.Images + waltersImagePostfix
-	waltersObject.CuratorComment = formResponse.Description
-	err = Insert("beacon", waltersObject.Beacon)
-	if err != nil {
-		//Return a 500
-		return 500, h, nil, errors.New("Couldn't insert corresponding beacon.'")
-	}
+func handlePOSTBeacon(w http.ResponseWriter, req *http.Request) {
+	log.Println("I got here?")
+	switch req.Method {
+	case "OPTIONS":
+		w.Header().Set("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		fallthrough
+	case "POST":
+		//		w.Header().Set("Access-Control-Allow-Origin", "*")
+		var formResponse FormResponse
+		err := ReadJSON(req, &formResponse)
+		log.Printf("We have begun the ritual, %v", formResponse)
+		client := &http.Client{}
+		request, _ := http.NewRequest("GET", waltersAPIPrefix+strings.Replace(formResponse.Title, " ", "%20", -1), nil)
+		request.Header.Add("Accept", "application/json")
+		res, err := client.Do(request)
+		if err != nil {
+			http.Error(w, "Req didn't go through", 500)
+			return
+			//		log.Fatalf("Req didn't go through, %v", err)
+		}
+		defer res.Body.Close()
+		var data json.RawMessage
+		err = json.NewDecoder(res.Body).Decode(&data)
+		if err != nil {
+			http.Error(w, "Couldn't decode data...", 500)
+			return
+			//		log.Fatalf("Can't resolve the datum?%v", err)
+		}
+		wal := Walters{}
+		err = json.Unmarshal(data, &wal)
+		if err != nil {
+			http.Error(w, "Couldn't marshall into individual waltOBJ.", 500)
+			return
+			//		log.Fatalf("Can't unmarshall into individ waltOBJ, %v", err)
+		}
+		if len(wal.Items) < 1 {
+			http.Error(w, "Couldn't marshall correctly", 500)
+			return
+		}
+		waltersObject := wal.Items[0]
+		waltersObject.Beacon = Beacon{formResponse.ProxID, formResponse.MajorID, formResponse.MinorID}
+		waltersObject.ImageURL = waltersImagePrefix + string(waltersObject.Images[0]) + waltersImagePostfix
+		waltersObject.CuratorComment = formResponse.Description
+		err = Insert("beacon", waltersObject.Beacon)
+		if err != nil {
+			//Return a 500
+			http.Error(w, "Couldn't insert corresponding beacon.", 500)
+			return
+		}
 
-	err = Insert("art", waltersObject)
-	if err != nil {
-		//Return a 500
-		return 500, h, nil, errors.New("Couldn't insert corresponding art piece.'")
+		err = Insert("art", waltersObject)
+		if err != nil {
+			//Return a 500
+			http.Error(w, "Couldn't insert corresponding art piece.", 500)
+			return
+		}
+		http.Error(w, http.StatusText(http.StatusCreated), http.StatusCreated)
+		break
 	}
-
-	return 200, h, nil, nil
 }
 
-func handleBeacon(u *url.URL, h http.Header, _ interface{}) (status int, responseHeaders http.Header, waltersObj *WalterObj, err error) {
-	minorID := u.Query().Get("minorID")
+func handleBeacon(w http.ResponseWriter, req *http.Request) {
+	params := mux.Vars(req)
+	minorID, err := strconv.Atoi(params["minorID"])
+	if err != nil {
+		http.Error(w, "Beacon can't be found with invalid id", 404)
+	}
 	log.Println(minorID)
 	beacon, err := SearchBeaconByID(minorID, 0, -1)
+	log.Printf("%v", beacon)
 	if err != nil {
 		//Beacon not found return 404
-		return 404, responseHeaders, nil, errors.New("Beacon not found in db")
+		http.Error(w, "Beacon not found in db", 404)
 	}
 	for _, i := range beacon {
 		arts, error := SearchArtByBeacon(i, 0, -1)
 		if error != nil {
-			return 404, responseHeaders, nil, errors.New("Beacon not assigned to art piece")
+			http.Error(w, "Beacon assigned to art piece", 404)
 		}
-		return 200, responseHeaders, &arts[0], nil
+		ServeJSON(w, arts)
 
 	}
 	//	responseHeaders.Add("Accept","application/json")
-	return 404, responseHeaders, nil, errors.New("Beacon not found in db")
+	http.Error(w, "Beacon not found", 404)
 	//Send a get request to api with keyword param
 }
 
@@ -268,11 +287,11 @@ func SearchBeacon(q interface{}, skip int, limit int) (searchResults []Beacon, e
 //
 
 //SearchBeaconByID is a
-func SearchBeaconByID(beacon string, skip int, limit int) (searchResults []Beacon, err error) {
-	if len(beacon) == 20 {
-		return SearchBeacon(bson.M{"MinorID": beacon}, skip, limit)
-	}
-	return nil, errors.New("Not long enough to be a beacon")
+func SearchBeaconByID(minorID int, skip int, limit int) (searchResults []Beacon, err error) {
+	//	if len(beacon) == 20 {
+	return SearchBeacon(bson.M{"minorid": minorID}, skip, limit)
+	//	}
+	//	return nil, errors.New("Not long enough to be a beacon")
 }
 
 //SearchArt is a
@@ -294,5 +313,39 @@ func SearchArt(q interface{}, skip int, limit int) (searchResults []WalterObj, e
 
 //SearchArtByBeacon is a specific version of searchArt
 func SearchArtByBeacon(beacon Beacon, skip int, limit int) (searchResults []WalterObj, err error) {
-	return SearchArt(bson.M{"Beacon": beacon}, skip, limit)
+	return SearchArt(bson.M{"beacon": beacon}, skip, limit)
+}
+
+// ServeJSON replies to the request with a JSON
+// representation of resource v.
+func ServeJSON(w http.ResponseWriter, v interface{}) {
+	// avoid json vulnerabilities, always wrap v in an object literal
+	//	doc := map[string]interface{}{"d": v}
+	if data, err := json.Marshal(v); err != nil {
+		log.Printf("Error marshalling json: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	} else {
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write(data)
+	}
+}
+
+// ReadJSON decodes JSON data into a provided struct which must be passed in as a pointer.
+//If it's not a pointer you are basically putting your data into a bottomless gorge and willing it to
+//show up right next to you. Just no.
+func ReadJSON(req *http.Request, v interface{}) error {
+	defer req.Body.Close()
+	decoder := json.NewDecoder(req.Body)
+	err := decoder.Decode(v)
+	return err
+}
+
+//Use this method to debug things
+func logRequest(handler func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var s = time.Now()
+		handler(w, r)
+		log.Printf("%s %s %6.3fms", r.Method, r.RequestURI, (time.Since(s).Seconds() * 1000))
+	}
 }
