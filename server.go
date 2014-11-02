@@ -247,7 +247,7 @@ func handlePOSTBeacon(w http.ResponseWriter, req *http.Request) {
 		}
 		waltersObject := wal.Items[0]
 		waltersObject.Beacon = Beacon{formResponse.ProxID, formResponse.MajorID, formResponse.MinorID}
-		waltersObject.ImageURL = waltersImagePrefix + string(waltersObject.Images[0]) + waltersImagePostfix
+		waltersObject.ImageURL = waltersImagePrefix + strings.Split(waltersObject.Images, ",")[0] + waltersImagePostfix
 		waltersObject.CuratorComment = formResponse.Description
 
 		name := strconv.Itoa(waltersObject.Beacon.MinorID)
