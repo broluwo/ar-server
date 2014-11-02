@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -13,38 +14,14 @@ import (
 
 //curl -H "Content-Type: application/json" -XPUT -d '{"P"}' -f -v http://localhost:3000/beacon/{id}
 
-//Server is the name for the server deal wit it
-type Server struct {
-	Session *mgo.Session // The main session we'll we be cloning
-	DBURI   string       // Where the DB is on the network
-	dbName  string       // Name of the MongoDB
-}
-
-//Art is the struct that represents the structure of an art piece
-type Art struct {
-	Beacon     Beacon
-	Author     string
-	Title      string
-	ChatroomID string
-}
-
-//Beacon is the struct that structures what the data for a beacon will look like
-type Beacon struct {
-	ProxID  string
-	MajorID string
-	MinorID string
-}
-
-//ArtRoom is a
-type ArtRoom struct {
-	Art    Art
-	Beacon Beacon
-}
-
 const (
 	dbName = "artroomServer"
 	//DBURI for the mongodb
 	DBURI = "127.0.0.1"
+
+	waltersAPIPrefix    = "http://api.thewalters.org/v1/objects?apikey=ShxvahaBFNIcfWR7E78xXdssKIlXtUAJk9rDDrrmlvbOlxQKtASCzV4op5aHv2Il&keyword="
+	waltersImagePrefix  = "http://static.thewalters.org/images/"
+	waltersImagePostfix = "?width=500"
 )
 
 var (
@@ -62,7 +39,7 @@ var (
 	}
 
 	artIndex = mgo.Index{
-		Key:        []string{"Beacon"},
+		Key:        []string{"Beacon", "Title"},
 		Unique:     true,
 		DropDups:   true,
 		Background: true,
@@ -70,13 +47,54 @@ var (
 		Name:       "ArtIndex",
 		//ExpireAf
 	}
-	indices    = []mgo.Index{beaconIndex, artIndex}
-	hMux       tigertonic.HostServeMux
-	mux, nsMux *tigertonic.TrieServeMux
+	indices = []mgo.Index{beaconIndex, artIndex}
+	mux     *tigertonic.TrieServeMux
+)
+
+type (
+	//Server is the name for the server deal wit it
+	Server struct {
+		Session *mgo.Session // The main session we'll we be cloning
+		DBURI   string       // Where the DB is on the network
+		dbName  string       // Name of the MongoDB
+	}
+
+	//Beacon is the struct that structures what the data for a beacon will look like
+	Beacon struct {
+		ProxID  string
+		MajorID int
+		MinorID int
+	}
+	//FormResponse is what we get back from the form
+	FormResponse struct {
+		Date        string
+		Author      string
+		Title       string
+		ProxID      string
+		MajorID     int
+		MinorID     int
+		Description string
+	}
+
+	//The structure the walter api gives us more or less
+	WalterObj struct {
+		ObjectID       int
+		Collection     string
+		Title          string
+		Medium         string
+		Description    string
+		Images         string
+		CuratorComment string
+		Beacon         Beacon
+		ImageURL       string
+	}
+	//Walters objects
+	Walters struct {
+		Items []WalterObj
+	}
 )
 
 func main() {
-
 	log.Println("Server is warming up...")
 	initDB()
 	initHandlers()
@@ -99,22 +117,42 @@ func initHandlers() {
 		"/beacon/{minorID}",
 		cors.Build(tigertonic.Marshaled(handleBeacon)),
 	)
-	//
-	// mux.Handle(
-	// 	"",
-	// 	"",
-	// 	tiger
-	// 	)
 }
 
-func handlePOSTBeacon(u *url.URL, h http.Header, artPiece *ArtRoom) (status int, responseHeaders http.Header, _ interface{}, err error) {
-	err = Insert("beacon", artPiece.Beacon)
+func handlePOSTBeacon(u *url.URL, h http.Header, formResponse *FormResponse) (status int, responseHeaders http.Header, _ interface{}, err error) {
+	log.Printf("We have begun the ritual, %v", h)
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", waltersAPIPrefix+formResponse.Title, nil)
+	req.Header.Add("Accept", "application/json")
+	res, err := client.Do(req)
+	if err != nil {
+		return 500, h, nil, errors.New("Req didn't go through")
+		//		log.Fatalf("Req didn't go through, %v", err)
+	}
+	defer res.Body.Close()
+	var data json.RawMessage
+	err = json.NewDecoder(res.Body).Decode(&data)
+	if err != nil {
+		return 500, h, nil, errors.New("Couldn't decode data...")
+		//		log.Fatalf("Can't resolve the datum?%v", err)
+	}
+	w := Walters{}
+	err = json.Unmarshal(data, &w)
+	if err != nil {
+		return 500, h, nil, errors.New("Couldn't marshall into individual waltOBJ'")
+		//		log.Fatalf("Can't unmarshall into individ waltOBJ, %v", err)
+	}
+	waltersObject := w.Items[0]
+	waltersObject.Beacon = Beacon{formResponse.ProxID, formResponse.MajorID, formResponse.MinorID}
+	waltersObject.ImageURL = waltersImagePrefix + waltersObject.Images + waltersImagePostfix
+	waltersObject.CuratorComment = formResponse.Description
+	err = Insert("beacon", waltersObject.Beacon)
 	if err != nil {
 		//Return a 500
-		return 200, h, nil, errors.New("Couldn't insert corresponding beacon.'")
+		return 500, h, nil, errors.New("Couldn't insert corresponding beacon.'")
 	}
 
-	err = Insert("art", artPiece.Art)
+	err = Insert("art", waltersObject)
 	if err != nil {
 		//Return a 500
 		return 500, h, nil, errors.New("Couldn't insert corresponding art piece.'")
@@ -123,7 +161,7 @@ func handlePOSTBeacon(u *url.URL, h http.Header, artPiece *ArtRoom) (status int,
 	return 200, h, nil, nil
 }
 
-func handleBeacon(u *url.URL, h http.Header, _ interface{}) (status int, responseHeaders http.Header, art *Art, err error) {
+func handleBeacon(u *url.URL, h http.Header, _ interface{}) (status int, responseHeaders http.Header, waltersObj *WalterObj, err error) {
 	minorID := u.Query().Get("minorID")
 	log.Println(minorID)
 	beacon, err := SearchBeaconByID(minorID, 0, -1)
@@ -139,7 +177,9 @@ func handleBeacon(u *url.URL, h http.Header, _ interface{}) (status int, respons
 		return 200, responseHeaders, &arts[0], nil
 
 	}
+	//	responseHeaders.Add("Accept","application/json")
 	return 404, responseHeaders, nil, errors.New("Beacon not found in db")
+	//Send a get request to api with keyword param
 }
 
 func initDB() {
@@ -236,8 +276,8 @@ func SearchBeaconByID(beacon string, skip int, limit int) (searchResults []Beaco
 }
 
 //SearchArt is a
-func SearchArt(q interface{}, skip int, limit int) (searchResults []Art, err error) {
-	searchResults = []Art{}
+func SearchArt(q interface{}, skip int, limit int) (searchResults []WalterObj, err error) {
+	searchResults = []WalterObj{}
 	query := func(c *mgo.Collection) error {
 		function := c.Find(q).Skip(skip).Limit(limit).All(&searchResults)
 		if limit < 0 {
@@ -253,6 +293,6 @@ func SearchArt(q interface{}, skip int, limit int) (searchResults []Art, err err
 }
 
 //SearchArtByBeacon is a specific version of searchArt
-func SearchArtByBeacon(beacon Beacon, skip int, limit int) (searchResults []Art, err error) {
+func SearchArtByBeacon(beacon Beacon, skip int, limit int) (searchResults []WalterObj, err error) {
 	return SearchArt(bson.M{"Beacon": beacon}, skip, limit)
 }
