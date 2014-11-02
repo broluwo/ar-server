@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -94,6 +95,7 @@ type (
 	//The structure the walter api gives us more or less
 	WalterObj struct {
 		ObjectID       int
+		BinderID       string
 		Collection     string
 		Title          string
 		Author         string
@@ -121,6 +123,17 @@ type (
 		Name         string
 		Conversation bool
 	}
+	ChatroomResp struct {
+		Code string
+		Data CRD
+	}
+	CRD struct {
+		ID          string
+		Name        string
+		Revision    int
+		CreatedTime int
+		UpdatedTime int
+	}
 )
 
 func main() {
@@ -146,15 +159,8 @@ func initMoxtra() {
 	moxtraSignature = mac.Sum(nil)
 	str := base64.StdEncoding.EncodeToString(moxtraSignature)
 	fmt.Println(str)
-	//	re := regexp.MustCompile("/\+/g")//Global match, any backslash become a hyphen
-	//	str = re.ReplaceAllLiteralString(str, "-")
-	//	re = regexp.MustCompile("\\//g")//Any forward slash becomes an underscore
-	//	str = re.ReplaceAllLiteralString(str, "_")
-	//	re = regexp.MustCompile("\\=+$/")//Remove any trailing equals
-	//	str = re.ReplaceAllLiteralString(str, "")
 	str = strings.Replace(str, "\\", "-", -1)
 	str = strings.Replace(str, "/", "_", -1)
-	//	str = strings.Replace(str, "=", "", -1)
 	str = str[:len(str)-1]
 	client := &http.Client{}
 	url := moxtraAPI + moxtraClientID + moxtraCS + string(moxtraClientSecret) + moxtraGrantType + u.String() + moxtraTS + moxtraTimeStamp + moxtraSig + str //string(moxtraSignature)
@@ -243,8 +249,35 @@ func handlePOSTBeacon(w http.ResponseWriter, req *http.Request) {
 		waltersObject.Beacon = Beacon{formResponse.ProxID, formResponse.MajorID, formResponse.MinorID}
 		waltersObject.ImageURL = waltersImagePrefix + string(waltersObject.Images[0]) + waltersImagePostfix
 		waltersObject.CuratorComment = formResponse.Description
-		err = Insert("beacon", waltersObject.Beacon)
+
+		name := strconv.Itoa(waltersObject.Beacon.MinorID)
+		d, errorsA := json.Marshal(MoxtraChatRoom{Name: name, Conversation: true})
+		if errorsA != nil {
+			panic(errorsA)
+		}
+		req2, _ := http.NewRequest("POST", "https://api.moxtra.com/me/binders", bytes.NewBuffer(d))
+		req2.Header.Add("Authorization", "Bearer "+s.MoxtraToken.AccessToken)
+		req.Header.Set("Content-Type", "application/json")
+		res2, err2 := client.Do(req2)
+		if err2 != nil {
+			http.Error(w, "Req didn't go through", 500)
+			return
+			//		log.Fatalf("Req didn't go through, %v", err)
+		}
+		defer res2.Body.Close()
+		chr := ChatroomResp{}
+		err2 = json.NewDecoder(res2.Body).Decode(&chr)
 		if err != nil {
+			http.Error(w, "Couldn't decode data...", 500)
+			return
+			//		log.Fatalf("Can't resolve the datum?%v", err)
+		}
+		waltersObject.BinderID = chr.Data.ID
+
+		//	err2 = json.Unmarshal(data, &chr)
+
+		err2 = Insert("beacon", waltersObject.Beacon)
+		if err2 != nil {
 			//Return a 500
 			http.Error(w, "Couldn't insert corresponding beacon.", 500)
 			return
