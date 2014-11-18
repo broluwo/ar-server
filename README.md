@@ -1,4 +1,4 @@
 ar-server
 =========
 
-Server for ArtRoom
+Server for [ArtRoom] (https://github.com/churichard/ArtRoom)
